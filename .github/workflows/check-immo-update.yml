@@ -1,0 +1,55 @@
+name: check immo update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 30 14 * * *
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    name: check ${{ matrix.repo }} ${{ matrix.branch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [immortalwrt]
+        branch: [master, openwrt-23.05, openwrt-21.02, openwrt-18.06, openwrt-18.06-k5.4]
+
+    env:
+      REPO_URL: https://github.com/${{ matrix.repo }}/${{ matrix.repo }}
+      REPO_BRANCH: ${{ matrix.branch }}
+
+    steps:
+    - name: Get Commit Hash
+      id: getHash
+      run: |
+        git clone $REPO_URL -b $REPO_BRANCH .
+        echo "commitHash=$(git log --pretty=tformat:"%h" -n1 tools toolchain)" >>$GITHUB_OUTPUT
+        echo "LITE_BRANCH=${REPO_BRANCH#*-}" >>$GITHUB_ENV
+
+    - name: Compare Commit Hash
+      id: cacheHash
+      uses: actions/cache@v4
+      with:
+        path: .commitHash
+        key: ${{ matrix.repo }}-${{ env.LITE_BRANCH }}-commitHash-${{ steps.getHash.outputs.commitHash }}
+
+    - name: Save New Commit Hash
+      if: steps.cacheHash.outputs.cache-hit != 'true'
+      run: |
+        echo ${{ steps.getHash.outputs.commitHash }} | tee .commitHash
+
+    - name: Trigger build
+      if: steps.cacheHash.outputs.cache-hit != 'true'
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ github.token }}
+        event-type: update ${{ matrix.repo }} toolchain
+
+    - name: Delete workflow runs
+      if: (!cancelled())
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        retain_days: 5
+        keep_minimum_runs: 0
