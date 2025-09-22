@@ -1,0 +1,100 @@
+name: check toolchain update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 30 14 * * *
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    name: check ${{ matrix.repo }} ${{ matrix.branch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [immortalwrt, openwrt]
+        branch: [master, openwrt-24.10, openwrt-23.05, openwrt-21.02]
+        include:
+          - repo: lede
+            branch: master
+
+    outputs:
+      update_immortalwrt: ${{ steps.saveHash.outputs.update_immortalwrt }}
+      update_openwrt: ${{ steps.saveHash.outputs.update_openwrt }}
+      update_lede: ${{ steps.saveHash.outputs.update_lede }}
+
+    env:
+      REPO_URL: https://github.com/${{ matrix.repo }}/${{ matrix.repo }}
+      REPO_BRANCH: ${{ matrix.branch }}
+
+    steps:
+    - name: Get Commit Hash
+      id: getHash
+      run: |
+        if [[ ${{ matrix.repo }} == lede ]]; then
+          REPO_URL=https://github.com/coolsnowwolf/${{ matrix.repo }}
+          echo "REPO_URL=$REPO_URL" >>$GITHUB_ENV
+        fi
+        git clone $REPO_URL -b $REPO_BRANCH .
+        echo "commitHash=$(git log --pretty=tformat:"%h" -n1 tools toolchain)" >>$GITHUB_OUTPUT
+        echo "LITE_BRANCH=${REPO_BRANCH#*-}" >>$GITHUB_ENV
+
+    - name: Compare Commit Hash
+      id: cacheHash
+      uses: actions/cache@v4
+      with:
+        path: .commitHash
+        key: ${{ matrix.repo }}-${{ env.LITE_BRANCH }}-commitHash-${{ steps.getHash.outputs.commitHash }}
+
+    - name: Save New Commit Hash
+      id: saveHash
+      if: steps.cacheHash.outputs.cache-hit != 'true'
+      run: |
+        echo ${{ steps.getHash.outputs.commitHash }} | tee .commitHash
+        if [[ ${{ matrix.repo }} == immortalwrt ]]; then
+          echo "update_immortalwrt=true" >>$GITHUB_OUTPUT
+        elif [[ ${{ matrix.repo }} == openwrt ]]; then
+          echo "update_openwrt=true" >>$GITHUB_OUTPUT
+        elif [[ ${{ matrix.repo }} == lede ]]; then
+          echo "update_lede=true" >>$GITHUB_OUTPUT
+        else
+          echo "Matching error, Please check the source code" && exit 1
+        fi
+
+  update:
+    needs: [check]
+    if: needs.check.outputs.update_immortalwrt == 'true' || needs.check.outputs.update_openwrt == 'true' || needs.check.outputs.update_lede == 'true'
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Update ImmortalWrt Toolchain
+      if: needs.check.outputs.update_immortalwrt == 'true'
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ github.token }}
+        event-type: update immortalwrt toolchain
+
+    - name: Update OpenWrt Toolchain
+      if: needs.check.outputs.update_openwrt == 'true'
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ github.token }}
+        event-type: update openwrt toolchain
+
+    - name: Update Lede Toolchain
+      if: needs.check.outputs.update_lede == 'true'
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ github.token }}
+        event-type: update lede toolchain
+
+  cleaning:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Delete Old Workflows
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        retain_days: 5
+        keep_minimum_runs: 0
