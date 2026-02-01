@@ -1,0 +1,106 @@
+name: build immortalwrt toolchain
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: update immortalwrt toolchain
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    name: build ${{matrix.branch}} ${{matrix.target}}
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [immortalwrt]
+        branch: [master, openwrt-25.12, openwrt-24.10, openwrt-23.05]
+        target: [x86_64, rockchip_armv8, armsr_armv8, ramips_mt7621, mediatek_filogic, qualcommax_ipq60xx]
+
+    env:
+      REPO_URL: https://github.com/${{matrix.repo}}/${{matrix.repo}}
+      REPO_BRANCH: ${{matrix.branch}}
+      TARGET_DEVICE: ${{matrix.target}}
+      TOOLCHAIN_TAG: toolchain-cache
+      TZ: Asia/Shanghai
+
+    steps:
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt -yqq update
+          sudo -E apt -yqq install $(curl -fsSL is.gd/depends_ubuntu_2404)
+          sudo -E apt -yqq autoremove --purge
+          sudo -E apt -yqq autoclean
+          sudo -E apt -yqq clean
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Clone Source Code
+        run: |
+          git clone -b $REPO_BRANCH --single-branch $REPO_URL openwrt
+          cd openwrt
+          echo "OPENWRT_PATH=$PWD" >>$GITHUB_ENV
+          echo -e "CONFIG_TARGET_${TARGET_DEVICE%_*}=y\nCONFIG_TARGET_$TARGET_DEVICE=y" >.config
+
+      - name: Generate Variables
+        run: |
+          cd $OPENWRT_PATH
+          make defconfig >/dev/null 2>&1
+          echo "SOURCE_REPO=$(basename $REPO_URL)" >>$GITHUB_ENV
+          echo "LITE_BRANCH=${REPO_BRANCH#*-}" >>$GITHUB_ENV
+          TARGET_NAME=$(awk -F '"' '/CONFIG_TARGET_BOARD/{print $2}' .config)
+          SUBTARGET_NAME=$(awk -F '"' '/CONFIG_TARGET_SUBTARGET/{print $2}' .config)
+          echo "DEVICE_TARGET=$TARGET_NAME-$SUBTARGET_NAME" >>$GITHUB_ENV
+
+      - name: Compare Toolchain Hash
+        id: hash
+        run: |
+          cd $OPENWRT_PATH
+          TOOLS_HASH=$(git log -1 --pretty=format:"%h" tools toolchain)
+          CACHE_NAME="$SOURCE_REPO-$LITE_BRANCH-$DEVICE_TARGET-cache-$TOOLS_HASH"
+          echo "CACHE_NAME=$CACHE_NAME" >>$GITHUB_ENV
+          CACHE_URL=$(curl -sL https://api.github.com/repos/$GITHUB_REPOSITORY/releases | awk -F '"' '/download_url/{print $4}' | grep $CACHE_NAME) || true
+          [ "$CACHE_URL" ] || echo "REBUILD_TOOLCHAIN=true" >>$GITHUB_OUTPUT
+
+      - name: Install Feeds
+        if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
+        run: |
+          cd $OPENWRT_PATH
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          make defconfig
+
+      - name: Compile Toolchain
+        if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
+        id: toolchain
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/output
+          cd $OPENWRT_PATH
+          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          echo "🚀 开始打包工具链"
+          [[ -d ".ccache" && -n "$(ls -A .ccache)" ]] && (ccache=".ccache"; du -h --max-depth=1 .ccache)
+          du -h --max-depth=1 staging_dir
+          tar -I zstdmt -cf $GITHUB_WORKSPACE/output/$CACHE_NAME.tzst staging_dir/host* staging_dir/tool* $ccache
+          ls -lh $GITHUB_WORKSPACE/output
+          [ -e $GITHUB_WORKSPACE/output/$CACHE_NAME.tzst ] && \
+          echo "✅ 工具链打包完成"
+
+      - name: Delete Old Toolchain
+        if: steps.toolchain.conclusion == 'success'
+        uses: mknejp/delete-release-assets@v1
+        with:
+          token: ${{github.token}}
+          tag: ${{env.TOOLCHAIN_TAG}}
+          assets: '${{env.SOURCE_REPO}}-${{env.LITE_BRANCH}}-${{env.DEVICE_TARGET}}*'
+          fail-if-no-assets: false
+          fail-if-no-release: false
+
+      - name: Upload Toolchain To Release
+        if: steps.toolchain.conclusion == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: toolchain-cache
+          tag_name: ${{env.TOOLCHAIN_TAG}}
+          token: ${{github.token}}
+          files: output/*
+          body: OpenWrt 工具链缓存
