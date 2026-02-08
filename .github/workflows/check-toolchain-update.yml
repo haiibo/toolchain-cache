@@ -1,0 +1,113 @@
+name: check toolchain update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 13 * * *
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    name: check ${{matrix.repo}} ${{matrix.branch}}
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [immortalwrt, openwrt]
+        branch: [master, openwrt-25.12, openwrt-24.10, openwrt-23.05]
+        include:
+          - repo: lede
+            branch: master
+
+    outputs:
+      update_immortalwrt: ${{steps.saveHash.outputs.update_immortalwrt}}
+      update_openwrt: ${{steps.saveHash.outputs.update_openwrt}}
+      update_lede: ${{steps.saveHash.outputs.update_lede}}
+
+    env:
+      REPO_URL: https://github.com/${{matrix.repo}}/${{matrix.repo}}
+      REPO_BRANCH: ${{matrix.branch}}
+
+    steps:
+      - name: Get Commit Hash
+        id: getHash
+        run: |
+          if [[ ${{matrix.repo}} == lede ]]; then
+            REPO_URL=https://github.com/coolsnowwolf/${{matrix.repo}}
+            echo "REPO_URL=$REPO_URL" >>$GITHUB_ENV
+          fi
+          git clone -b $REPO_BRANCH --single-branch $REPO_URL .
+          echo "commitHash=$(git log -1 --pretty=format:"%h" tools toolchain)" >>$GITHUB_OUTPUT
+          echo "LITE_BRANCH=${REPO_BRANCH#*-}" >>$GITHUB_ENV
+
+      - name: Compare Commit Hash
+        id: cacheHash
+        uses: actions/cache@v5
+        with:
+          key: ${{matrix.repo}}-${{env.LITE_BRANCH}}-commitHash-${{steps.getHash.outputs.commitHash}}
+          path: commitHash
+
+      - name: Delete Old Hash
+        if: steps.cacheHash.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{github.token}}
+          GH_REPO: ${{github.repository}}
+        run: |
+          gh cache list --key "${{matrix.repo}}-$LITE_BRANCH-commitHash" | cut -f1 | while read -r CACHE_ID; do
+            echo "Deleting cache: $CACHE_ID"
+            gh cache delete $CACHE_ID
+          done
+          #gh cache list --key "${{matrix.repo}}-$LITE_BRANCH-commitHash" | cut -f1 | xargs -rn1 gh cache delete
+          #gh cache list --key "${{matrix.repo}}-$LITE_BRANCH-commitHash" --json id --jq '.[].id' | xargs -rn1 gh cache delete
+
+      - name: Save New Commit Hash
+        id: saveHash
+        if: steps.cacheHash.outputs.cache-hit != 'true'
+        run: |
+          echo ${{steps.getHash.outputs.commitHash}} | tee commitHash
+          if [[ ${{matrix.repo}} == immortalwrt ]]; then
+            echo "update_immortalwrt=true" >>$GITHUB_OUTPUT
+          elif [[ ${{matrix.repo}} == openwrt ]]; then
+            echo "update_openwrt=true" >>$GITHUB_OUTPUT
+          elif [[ ${{matrix.repo}} == lede ]]; then
+            echo "update_lede=true" >>$GITHUB_OUTPUT
+          else
+            echo "Matching error, Please check the source code" && exit 1
+          fi
+
+  update:
+    needs: [check]
+    if: needs.check.outputs.update_immortalwrt == 'true' || needs.check.outputs.update_openwrt == 'true' || needs.check.outputs.update_lede == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Update ImmortalWrt Toolchain
+        if: needs.check.outputs.update_immortalwrt == 'true'
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{github.token}}
+          event-type: update immortalwrt toolchain
+
+      - name: Update OpenWrt Toolchain
+        if: needs.check.outputs.update_openwrt == 'true'
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{github.token}}
+          event-type: update openwrt toolchain
+
+      - name: Update Lede Toolchain
+        if: needs.check.outputs.update_lede == 'true'
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{github.token}}
+          event-type: update lede toolchain
+
+  cleanup:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Delete Old Workflows
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{github.token}}
+          retain_days: 5
+          keep_minimum_runs: 0
