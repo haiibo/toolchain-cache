@@ -41,7 +41,7 @@ jobs:
 
       - name: Compare Commit Hash
         id: cacheHash
-        uses: actions/cache@v5
+        uses: actions/cache@main
         with:
           key: ${{matrix.repo}}-${{env.LITE_BRANCH}}-commitHash-${{steps.getHash.outputs.commitHash}}
           path: commitHash
@@ -82,21 +82,21 @@ jobs:
     steps:
       - name: Update ImmortalWrt Toolchain
         if: needs.check.outputs.update_immortalwrt == 'true'
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@main
         with:
           token: ${{github.token}}
           event-type: update immortalwrt toolchain
 
       - name: Update OpenWrt Toolchain
         if: needs.check.outputs.update_openwrt == 'true'
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@main
         with:
           token: ${{github.token}}
           event-type: update openwrt toolchain
 
       - name: Update Lede Toolchain
         if: needs.check.outputs.update_lede == 'true'
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@main
         with:
           token: ${{github.token}}
           event-type: update lede toolchain
@@ -106,7 +106,7 @@ jobs:
 
     steps:
       - name: Delete Old Workflows
-        uses: Mattraks/delete-workflow-runs@v2
+        uses: Mattraks/delete-workflow-runs@main
         with:
           token: ${{github.token}}
           retain_days: 5
